@@ -1,0 +1,413 @@
+---
+title: "GWAS Polygenic Risk Score example"
+author: "Alonso Cid"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(snpStats)
+library(SNPRelate)
+library(tidyverse)
+library(ggrepel)
+library(SNPassoc)
+library(biomaRt)
+library(genio)
+library(MASS)
+library(PredictABEL)
+```
+
+# Descriptive analysis of phenotype and covariates
+
+This repository contains a Genome-Wide Association Study (GWAS) pipeline applied to the Alzheimer’s Disease Neuroimaging Initiative (ADNI) dataset (https://adni.loni.usc.edu/about/). ADNI is a longitudinal multicenter study designed to develop clinical, imaging, genetic, and biochemical biomarkers for the early detection and tracking of Alzheimer’s disease (AD). The data comes from the first batch of ADNI (you need to request permission and accept their terms of conditions to download it).
+
+The purpose of this pipeline is to perform quality control and association analyses on or dataset. The main goal is to discover the relationship between Alzheimer’s disease and various covariates. As this is a GWAS, it is important to put particular emphasis on determining how different SNPs may influence the progression of the disease and generating a model to predict the risk of disease based on those SNPs.
+
+
+# Data description
+
+The analysis utilizes a cohort of 757 participants from the ADNI1 study, processed in PLINK binary format. Key details included are:
+
+-   **ID of the patient**
+-   **Study that the data comes from**: All data come from the ADNI1 study.
+-   **Date when the analysis were performed**
+-   **Disease status**: The data is roughly divided in 200 control patients (CN), 400 patients with cognitive decline (LMCI) and 200 with mild Alzheimer's disease (AD).
+-   **Age**: Most patients are between 70 and 80 years old (Graph 1).
+-   **Sex**: The data contains 308 females and 449 males (Graph 2).
+-   **Years of education**: Most patients have 15 years of education (Graph 3).
+-   **Presence of APOE 4 gen**: See Graph 4 to see the allele count across patients.
+-   **SNPs information**: The data include details on 620,901 SNPs per patient, along with the location of each SNP and its corresponding alleles.
+
+
+# Analysis and results
+
+## 1. QC
+
+```{r}
+ADNI_demog <- read.delim("adni_demographics.txt", sep = " ") 
+ADNI_plink <- read.plink("ADNI_cluster_01_forward_757LONI") 
+names(ADNI_plink)
+
+ADNI_geno <- ADNI_plink$genotypes 
+ADNI_annot <- ADNI_plink$map 
+ADNI_family <- ADNI_plink$fam 
+rownames(ADNI_geno) <- ADNI_family$member 
+rownames(ADNI_demog) <- ADNI_demog$ID
+rownames(ADNI_family) <- ADNI_family$member
+head(ADNI_demog) 
+
+identical(rownames(ADNI_demog), rownames(ADNI_geno)) #It's false, either there are different individuals or they aren't in order
+ids <- intersect(rownames(ADNI_demog), rownames(ADNI_geno))
+ADNI_demog <- ADNI_demog[ids, ]
+ADNI_geno <- ADNI_geno[ids, ]
+identical(rownames(ADNI_demog), rownames(ADNI_geno)) #Now they match
+
+#Filter the family information to match the filtered genotype and phenotype data
+ADNI_family <- ADNI_family[ids, ] 
+```
+### Descriptive plots
+
+```{r}
+hist(ADNI_demog$AGE, xlab="Years of age", main = "Distribution of age across patients", 
+     col = "darkorange") #Graph 1.
+
+sex_counts <- table(ADNI_demog$REPORTED_SEX)
+pie(sex_counts)
+pie(sex_counts, main = "Patients sex proportions", col = c("pink", "blue"),
+    labels = paste(names(sex_counts), "\n", sex_counts, sep="")) #Graph 2.
+
+hist(ADNI_demog$YEARS_EDUCATION, xlab="Years of education", 
+     main = "Years of education across patients", col = "coral1") #Graph 3.
+
+APOE4 <- table(ADNI_demog$APOE4)
+barplot(APOE4, main = "APOE4 allele count in patients", xlab = "APOE4", ylab = "Frequency",
+        col = "lightblue") #Graph 4.
+```
+
+### QC of SNPs
+
+Markers with a call rate less than 95%, a minimum allele frequency less than 5%, and a Hardy-Weinberg equilibrium p-value greater than 0.001 (equivalent to less than 3.3 z score) have been eliminated. These statistics were obtain using the col.summary() function on the ADNI_geno dataset (Table 1).
+
+```{r}
+#Get SNPs
+info.snps <- col.summary(ADNI_geno)
+head(info.snps) #Table 1
+
+#Extract controls
+controls <- ADNI_demog$DISEASE_STATUS == "CN" & !is.na(ADNI_demog$DISEASE_STATUS)
+geno.controls <- ADNI_geno[controls,]
+info.controls <- col.summary(geno.controls)
+
+#Filter
+use <- info.snps$Call.rate > 0.95 &
+       info.snps$MAF > 0.05 &
+       abs(info.controls$z.HWE < 3.3)    
+mask.snps <- use & !is.na(use)
+
+geno.qc.snps <- ADNI_geno[ , mask.snps]
+geno.qc.snps
+
+annotation <- ADNI_annot[mask.snps, ]
+
+sum(info.snps$Call.rate < 0.95) #nº of SNPs removed for bad cell rate
+sum(info.snps$MAF < 0.05, na.rm=TRUE) #nº of SNPs removed for low MAF
+sum(abs(info.controls$z.HWE > 3.3), na.rm=TRUE) #nº of SNPs that do not pass the HWE test
+sum(!mask.snps) #nº of SNPs that do not pass QC
+```
+
+During the SNPs quality control, 42467 SNPs were removed due to bad cell rate, 58344 due to low MAF and 112 due to not passing the HWE test. A total of 99009 deleted SNPs.
+
+### QC for individuals
+
+```{r}
+info.indv <- row.summary(geno.qc.snps)
+head(info.indv) #Table 2
+```
+
+#### Sex discordances
+
+Individuals with discordant reported and genomic sex need to be eliminated because it can be caused by genetic conditions that can introduce errors. They were identified by calculating chromosome X heterozygosity. Males are expected to have a value of 0 and females 0.3. The function row.summary() was used on the genomic data (Table 2), the results are plotted in Graph 5.
+
+```{r}
+geno.X <- geno.qc.snps[,annotation$chromosome=="23" & 
+                         !is.na(annotation$chromosome)]
+info.X <- row.summary(geno.X)
+mycol <- ifelse(ADNI_demog$REPORTED_SEX=="Male", "gray40", "gray80")
+plot(info.X$Heterozygosity, col=mycol, 
+     pch=16, xlab="Individuals", 
+     ylab="Heterozygosity in chromosome X") #Graph 5
+legend("topright", c("Males", "Females"), col=mycol,
+       pch=16) #The figure shows that males and females are distributed as expected, no filtration needed
+
+sex.discrep <- (ADNI_demog$REPORTED_SEX=="Male" & info.X$Heterozygosity > 0.2) |  
+               (ADNI_demog$REPORTED_SEX=="Female" & info.X$Heterozygosity < 0.2)   
+```
+
+#### Heterozygosity
+
+An abnormal heterozygosity indicate poor sample quality. Individuals with a heterozygosity rate lower than 0.32 are eliminated. Individuals with bad call rate refers to individuals with a high proportion of unassigned genotypes. Those with a call rate lower than 95% are also filtered (Table 3).
+
+```{r}
+MAF <- col.summary(geno.qc.snps)$MAF
+callmatrix <- !is.na(geno.qc.snps)
+hetExp <- callmatrix %*% (2*MAF*(1-MAF))
+hetObs <- with(info.indv, Heterozygosity*(ncol(geno.qc.snps))*Call.rate)
+info.indv$hetF <- 1-(hetObs/hetExp)
+
+head(info.indv) #Table 3
+```
+
+#### Duplicated or related individuals
+
+Related individuals can lead to bias. The package SNPRelate is used to identify them and delete them. A table with the relatedness (kinship) is generated using snpgdsIBDSelection() (Table 4). Individuals with kinship higher than 0.1 are considered related and should be filtered.
+
+```{r}
+snpgdsBED2GDS("ADNI_cluster_01_forward_757LONI.bed", # Transform PLINK data into GDS format 
+              "ADNI_cluster_01_forward_757LONI.fam",
+              "ADNI_cluster_01_forward_757LONI.bim", 
+              out="ADNI_GDS")
+
+genofile <- snpgdsOpen("ADNI_GDS")
+
+# Prune SNPs for IBD analysis
+set.seed(12345)
+snps.qc <- colnames(geno.qc.snps)
+snp.prune <- snpgdsLDpruning(genofile, ld.threshold = 0.2,
+                          snp.id = snps.qc)
+
+snps.ibd <- unlist(snp.prune, use.names=FALSE)
+
+ibd <- snpgdsIBDMoM(genofile, kinship=TRUE,
+                    snp.id = snps.ibd,
+                    num.thread = 1)
+
+ibd.kin <- snpgdsIBDSelection(ibd) 
+head(ibd.kin) #Table 4
+
+ibd.kin.thres <- subset(ibd.kin, kinship > 0.1)
+head(ibd.kin.thres)
+
+ids.rel <-  SNPassoc::related(ibd.kin.thres) 
+ids.rel
+
+use <- info.indv$Call.rate > 0.95 &
+       abs(info.indv$hetF) < 0.1 &
+       !sex.discrep &
+       !rownames(info.indv)%in%ids.rel
+mask.indiv <- use & !is.na(use)
+geno.qc <- geno.qc.snps[mask.indiv, ]
+
+demog.qc <- ADNI_demog[mask.indiv, ]
+identical(rownames(demog.qc), rownames(geno.qc))
+
+sum(info.indv$Call.rate < 0.95) #Number of individuals removed to bad call rate
+sum(abs(info.indv$hetF) > 0.1) #Number of individuals removed for heterozygosity problems
+sum(sex.discrep) #Number of individuals removed for sex discrepancies
+length(ids.rel) #Number of individuals removed to be related with others
+sum(!mask.indiv) #The total number of individuals that do not pass QC
+```
+
+During the individuals QC, 1 individual was removed due to bad cell rate, 18 due to heterozygosity problems, 0 due to sex discrepancies, 3 for being genetically too close. 21 individuals were removed in total.
+
+#### Population Ancestry
+
+Individuals with too many genetic differences can also introduce bias. A principal component analysis is calculated using the function snpgdsPCA() (Graph 6). Only the first 5 principal components are kept.
+
+```{r}
+pca <- snpgdsPCA(genofile, sample.id = rownames(geno.qc),  
+                           snp.id = snps.ibd, 
+                           num.thread=1)
+
+with(pca, plot(eigenvect[,1], eigenvect[,2], 
+               xlab="1st Principal Component", 
+               ylab="2nd Principal Component", 
+               main = "Ancestry Plot",
+               pch=21, bg="gray90", cex=0.8)) #graph 6
+
+demog.qc <- data.frame(demog.qc, pca$eigenvect[, 1:5])
+closefn.gds(genofile)
+```
+
+In the ancestry plot, Graph 6, there are outliying individuals in from 0.04 onwards in the first principal component, also different clusters may indicate different ancestry background so they can introduce some bias.
+
+## 2. Find SNPs related to Alzheimer
+
+To find SNPs related to AD, the snp.rhs,tests() function is used, it creates a model. There are three factors in the status column (NC, LMCI y AD), in order to use the function I decided to left only two so I transformed LMCI and NC patients into healthy (H). This way variants present in severe cases of AD are clearly isolated (Table 6).
+
+```{r}
+#Fuse CN and LMCI into H patients to be able to use snp.rhs.tests()
+demog.qc$NEW_STATUS <- ifelse(demog.qc$DISEASE_STATUS %in% c("CN", "LMCI"), "H", 
+                              as.character(demog.qc$DISEASE_STATUS))
+demog.qc$NEW_STATUS <- as.factor(demog.qc$NEW_STATUS)
+
+#Create the model to get related SNPs to Alzheimer
+res <- snp.rhs.tests(NEW_STATUS ~ AGE + REPORTED_SEX + YEARS_EDUCATION + APOE4 + X1 + X2, 
+                     data=demog.qc, snp.data=geno.qc, family="binomial")
+
+res[1:5,] #Table 5
+```
+
+
+
+## 3. Statistically significant SNPs after Bonferroni correction.
+
+A dataframe, called pvals, with the SNPs information about the SNPs of Table 5 and add the Bonferroni correction is created. (Table 6). For the Manhattan plot I used this script to save space (https://raw.githubusercontent.com/isglobal-brge/book_omic_association/master/R/manhattanPlot.R). No modifications were needed since no SNPs passed the adjustment (Graph 7).
+
+```{r}
+source("https://raw.githubusercontent.com/isglobal-brge/book_omic_association/master/R/manhattanPlot.R")
+
+pvals <- data.frame(SNP=annotation$snp.name, 
+                    CHR=annotation$chromosome,
+                    allele.1=annotation$allele.1,
+                    allele.2=annotation$allele.2,
+                    BP=annotation$position,
+                    P=p.value(res))
+# missing data is not allowed
+pvals <- subset(pvals, !is.na(CHR) & !is.na(P))
+pvals$P_adj <- p.adjust(pvals$P, method = "bonferroni") #No SNP is significant after Bonferroni
+head(pvals[order(pvals$P),]) #Table 6
+
+manhattanPlot(pvals, color=c("gray90", "gray40")) #Graph 7
+
+```
+
+SNPs associated with Alzheimer disease can be seen in Table 6. The Manhattan plot in Graph 7 shows the genome-wide association results. Although several SNPs displayed low p-values, none reached genome-wide significance after Bonferroni correction. The possible reason will be discuss further in the conclusion section.
+
+## 4. SNPs information table
+
+Most information to build the table was already calculated, so it was added into a table called Significant_snp (Table 7). Now, it is neccessary to create the annotation and calculate odds ratio.
+
+- Annotation: The biomaRt package was used for annotation. A class Mart object was created using ensembl gene names and their SNPs ids. The function getBM() was used to extract the names of the SNPs.
+
+- Odds ratio: The odds ratio can be calculated using the SNPassoc package which require the use of a genetic matrix in allelic format. For that I turned the geno matrix into a dataframe and use the function geno_to_char() to substitute the numeric allele representation for the actual allele letter. In this case, the geno matrix didn’t go from 0 to 2 plus NAs, so I subtracted 1 and turned the-1 into NAs. I know it’s correct because if you turn the 3 into NAs, you would get a very high amount of NAs which wouldn’t had pass the call rate filter during quality control. After that I created an snp object, created an association model, calculated the odds under different models (dominant, recessive and additive) and introduced the results into Table 7.
+
+```{r}
+#Get significant SNPs, position, allele and MAF
+significant_snp <- pvals[pvals$P < 10^-6, ]
+info.snps$SNP <- rownames(info.snps)
+significant_snp <- merge(significant_snp, info.snps[, c("SNP", "MAF")], by = "SNP", all.x = TRUE)
+
+#Anotation, gene name
+snp_ids <- significant_snp$SNP
+# Get gene annotations
+ensembl <- useEnsembl(biomart = "snp",
+                      dataset = "hsapiens_snp",
+                      host = "https://useast.ensembl.org")
+
+gene_annotations <- getBM(
+  attributes = c("ensembl_gene_name", "refsnp_id"),
+  filters = "snp_filter",
+  values = snp_ids,
+  mart = ensembl
+)
+
+significant_snp$gene_name <- gene_annotations$ensembl_gene_name
+
+#Get the matrix
+geno.qc_matrix <- as.data.frame(as(geno.qc, "matrix"))
+top10 <- pvals[order(pvals$P), ] #I will filter to ease the computational demand 
+top10 <- top10[1:10, "SNP"]
+geno.qc_matrix <- geno.qc_matrix[, top10]
+
+#Turn all columns from raw class to factor
+geno.qc_matrix[] <- lapply(geno.qc_matrix, function(x) as.numeric(as.character(x)))
+
+#Transform geno data into a human readable format compatible with SNPassoc
+rownames(pvals) <- pvals$SNP
+X <- t(geno.qc_matrix) - 1
+X[X == -1] <- NA
+bim <- pvals[rownames(X), c("allele.1", "allele.2")]
+colnames(bim)[1:2] <- c("alt", "ref")
+identical(nrow(X), nrow(bim))
+humanized_gene <- geno_to_char(X, bim)
+
+#Add status column
+humanized_gene <- as.data.frame(t(humanized_gene))
+humanized_gene$casecontrol <- demog.qc[rownames(humanized_gene), "NEW_STATUS"]
+
+#Select SNPs of interest
+matrix_or <- humanized_gene[, c("rs10955311", "rs11253696", "rs11857713", "casecontrol")]
+
+# Create a SNP object
+mySNP <- setupSNP(matrix_or, colSNPs=grep("^rs", colnames(matrix_or)), sep = "/")
+#ans <- WGassociation(casecontrol, mySNP, model="log-add")
+result <- WGassociation(casecontrol ~ 1, data = mySNP)
+
+# Calculate odds ratio under different genetic models
+dominant_model <- odds(result, model = "dominant")
+recessive_model <- odds(result, model = "recessive")
+additive_model <- odds(result, model = "additive")
+
+#Add OR to significant_snp
+significant_snp$OR_dominant <- dominant_model$OR
+significant_snp$OR_recessive <- recessive_model$OR
+significant_snp$OR_additive <- additive_model$OR
+
+significant_snp #Table 7
+```
+
+Since the Bonferroni threshold was too strict and didn't capture any SNPs, I used a standard threshold of 10e-6. The SNPs rs11253696 had no gene name, neither was it posible to find it manually on a database, that might be because it’s located in an intergenic region or in a non-coding region of genes (Table 7).
+
+The odds ratio in the dominant model means that individuals with at least one allele have X times the odds of developing alzheimer. Recessive model indicate that individuals with two copies of the risk allele have X time the odds of developing Alzheimer. In the additive model individuals each copy of the allele increase the odds of developing Alzheimer X times. To pick the model it is neccessary to choose the one with lower p-value; rs10955311 and rs11253696 are additive, rs11857713 is dominant (Table 6). In this ca the dominant model is choosen (P-val: 1.994381e-07).
+
+## 5. Create a genetic score
+
+The genetic score indicates a patient’s predisposition to a disease, in this case Alzheimer’s disease. First, single nucleotide polymorphisms (SNPs) showing an association threshold of 0.1 are filtered, and the case–control column is reintroduced (Table 8). The model is then fitted, significant SNPs are identified, and the risk score is calculated. An association model is created using glm() to assess the relationship between case–control status and the genetic score (Table 9). Finally, a receiver operating characteristic (ROC) curve is generated to evaluate the predictive performance of the model.
+```{r}
+#Filter the SNPs by association level (0.1)
+idx <- grep("^rs", colnames(humanized_gene))
+alzheimer.s <- setupSNP(data=humanized_gene, colSNPs=idx, sep="/")
+ans <- WGassociation(casecontrol, alzheimer.s, model="log-add")
+sel <- labels(alzheimer.s)[additive(ans)<0.1] #All SNPs pass the filter
+alzheimer.sel <- alzheimer.s[,sel]
+head(alzheimer.sel)
+
+#Add the casecontrol column again
+alzheimer.sel <- data.frame(lapply(alzheimer.sel, additive))
+dd.end <- data.frame(casecontrol=alzheimer.s$casecontrol, alzheimer.sel)
+head(dd.end) #Table 8
+
+#Fit the model
+dd.end.complete <- dd.end[complete.cases(dd.end),]
+mod <- stepAIC(glm(casecontrol ~ ., dd.end.complete,
+                   family="binomial"),
+               method="forward", trace=0)
+summary(mod)
+
+#Retrieve SNPs to create a genetic score:
+snps.score <- names(coef(mod))[-1]
+snps.score
+
+#Get the risk score
+pos <- which(names(dd.end.complete)%in%snps.score)
+names(dd.end.complete)
+pos
+score <- riskScore(mod, data=dd.end.complete, 
+                      cGenPreds=pos,
+                      Type="unweighted")
+table(score)
+
+#Association model
+mod.lin <- glm(casecontrol~score, dd.end.complete,
+               family="binomial")
+mod.lin #Table 9
+
+#Assessment of the predictive power of the model by under ROC curve
+predrisk <- predRisk(mod.lin, dd.end.complete)
+plotROC(data=dd.end.complete, cOutcome=1,
+        predrisk = predrisk)
+```
+
+Table 9 shows the association model. Doing the exponential of the score, exp(0.6722), indicates that the risk of Alzheimer increases by 95% per each risk allele. The exponential of the intercept, exp(-5.138), indicate that there is a 0.003% chance of having Alzheimer when the genetic score is 0 (no risk allele present).
+
+The ROC plot shows an AUC score of 0.764, there is a 76.4% chance that the genetic risk score calculated by the model can correctly rank a randomly chosen individual. That’s a good discrimination ability.
+
+# Conclusions and discusion
+## Conclusion
+The objective with this analysis was to identify SNPs related to Alzheimer disease and create a polygenic risk score, both were successfully achieved (Table 6 and 9). During the quality control, 99009 SNPs and 21 individuals were removed. An ancestry plot was made indicating some genetic segregation which may need further adjustment in future analysis. No SNPs met the threshold for genome-wide significance after Bonferroni correction, this suggest that Alzheimer’s disease risk is tied to multiple genes. Finally genetic risk score was developed, showing a 76.4% probability of correctly classifying individuals based on genetic risk, as indicated by an AUC of 0.764. This is probably the most important takeaway of the study as it show that Alzheimer disease is possible to predict through genetic markers and so work to prevent it.
+
+## Discussion
+Despite the significant findings, the results still need validation and further refinement. The identified SNP, rs11253696, in a non-coding or intergenic region, it can be an interesting path of research. Non-coding regions need a lot of research and are becoming increasingly important in understanding the development of diseases.
+
+The genetic risk score show potential to become a clinical tool in risk prediction. Future studies validating this score and integrating it with more clinical data could its predictive power.
