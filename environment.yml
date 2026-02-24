@@ -1,0 +1,16 @@
+name: gwas_prs_env
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - r-base
+  - bioconductor-snpstats
+  - bioconductor-snprelate
+  - r-tidyverse
+  - r-ggrepel
+  - r-snpassoc
+  - bioconductor-biomart
+  - r-genio
+  - r-mass
+  - r-predictabel
