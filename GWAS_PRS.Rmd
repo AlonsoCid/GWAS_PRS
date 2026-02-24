@@ -66,7 +66,6 @@ identical(rownames(ADNI_demog), rownames(ADNI_geno)) #Now they match
 #Filter the family information to match the filtered genotype and phenotype data
 ADNI_family <- ADNI_family[ids, ] 
 ```
-### Descriptive plots
 
 ```{r}
 hist(ADNI_demog$AGE, xlab="Years of age", main = "Distribution of age across patients", 
@@ -85,7 +84,7 @@ barplot(APOE4, main = "APOE4 allele count in patients", xlab = "APOE4", ylab = "
         col = "lightblue") #Graph 4.
 ```
 
-### QC of SNPs
+### 1.1. QC of SNPs
 
 Markers with a call rate less than 95%, a minimum allele frequency less than 5%, and a Hardy-Weinberg equilibrium p-value greater than 0.001 (equivalent to less than 3.3 z score) have been eliminated. These statistics were obtain using the col.summary() function on the ADNI_geno dataset (Table 1).
 
@@ -118,14 +117,14 @@ sum(!mask.snps) #nº of SNPs that do not pass QC
 
 During the SNPs quality control, 42467 SNPs were removed due to bad cell rate, 58344 due to low MAF and 112 due to not passing the HWE test. A total of 99009 deleted SNPs.
 
-### QC for individuals
+### 1.2. QC for individuals
 
 ```{r}
 info.indv <- row.summary(geno.qc.snps)
 head(info.indv) #Table 2: Individuals QC
 ```
 
-#### Sex discordances
+#### 1.2.1. Sex discordances
 
 Individuals with discordant reported and genomic sex need to be eliminated because it can be caused by genetic conditions that can introduce errors. They were identified by calculating chromosome X heterozygosity. Males are expected to have a value of 0 and females 0.3. The function row.summary() was used on the genomic data (Table 2), the results are plotted in Graph 5.
 
@@ -144,7 +143,7 @@ sex.discrep <- (ADNI_demog$REPORTED_SEX=="Male" & info.X$Heterozygosity > 0.2) |
                (ADNI_demog$REPORTED_SEX=="Female" & info.X$Heterozygosity < 0.2)   
 ```
 
-#### Heterozygosity
+#### 1.2.2. Heterozygosity
 
 An abnormal heterozygosity indicate poor sample quality. Individuals with a heterozygosity rate lower than 0.32 are eliminated. Individuals with bad call rate refers to individuals with a high proportion of unassigned genotypes. Those with a call rate lower than 95% are also filtered (Table 3).
 
@@ -158,7 +157,7 @@ info.indv$hetF <- 1-(hetObs/hetExp)
 head(info.indv) #Table 3: Heterozygosity
 ```
 
-#### Duplicated or related individuals
+#### 1.2.4. Duplicated or related individuals
 
 Related individuals can lead to bias. The package SNPRelate is used to identify them and delete them. A table with the relatedness (kinship) is generated using snpgdsIBDSelection() (Table 4). Individuals with kinship higher than 0.1 are considered related and should be filtered.
 
@@ -210,7 +209,7 @@ sum(!mask.indiv) #The total number of individuals that do not pass QC
 
 During the individuals QC, 1 individual was removed due to bad cell rate, 18 due to heterozygosity problems, 0 due to sex discrepancies, 3 for being genetically too close. 21 individuals were removed in total.
 
-#### Population Ancestry
+#### 1.2.5. Population Ancestry
 
 Individuals with too many genetic differences can also introduce bias. A principal component analysis is calculated using the function snpgdsPCA() (Graph 6). Only the first 5 principal components are kept.
 
