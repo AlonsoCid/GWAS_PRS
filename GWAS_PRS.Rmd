@@ -73,7 +73,7 @@ hist(ADNI_demog$AGE, xlab="Years of age", main = "Distribution of age across pat
      col = "darkorange") #Graph 1.
 
 sex_counts <- table(ADNI_demog$REPORTED_SEX)
-pie(sex_counts)
+#pie(sex_counts)
 pie(sex_counts, main = "Patients sex proportions", col = c("pink", "blue"),
     labels = paste(names(sex_counts), "\n", sex_counts, sep="")) #Graph 2.
 
@@ -92,7 +92,7 @@ Markers with a call rate less than 95%, a minimum allele frequency less than 5%,
 ```{r}
 #Get SNPs
 info.snps <- col.summary(ADNI_geno)
-head(info.snps) #Table 1
+head(info.snps) #Table 1: SNPs stats (first 6 rows)
 
 #Extract controls
 controls <- ADNI_demog$DISEASE_STATUS == "CN" & !is.na(ADNI_demog$DISEASE_STATUS)
@@ -122,7 +122,7 @@ During the SNPs quality control, 42467 SNPs were removed due to bad cell rate, 5
 
 ```{r}
 info.indv <- row.summary(geno.qc.snps)
-head(info.indv) #Table 2
+head(info.indv) #Table 2: Individuals QC
 ```
 
 #### Sex discordances
@@ -155,7 +155,7 @@ hetExp <- callmatrix %*% (2*MAF*(1-MAF))
 hetObs <- with(info.indv, Heterozygosity*(ncol(geno.qc.snps))*Call.rate)
 info.indv$hetF <- 1-(hetObs/hetExp)
 
-head(info.indv) #Table 3
+head(info.indv) #Table 3: Heterozygosity
 ```
 
 #### Duplicated or related individuals
@@ -183,7 +183,7 @@ ibd <- snpgdsIBDMoM(genofile, kinship=TRUE,
                     num.thread = 1)
 
 ibd.kin <- snpgdsIBDSelection(ibd) 
-head(ibd.kin) #Table 4
+head(ibd.kin) #Table 4: Relatedness
 
 ibd.kin.thres <- subset(ibd.kin, kinship > 0.1)
 head(ibd.kin.thres)
@@ -245,7 +245,7 @@ demog.qc$NEW_STATUS <- as.factor(demog.qc$NEW_STATUS)
 res <- snp.rhs.tests(NEW_STATUS ~ AGE + REPORTED_SEX + YEARS_EDUCATION + APOE4 + X1 + X2, 
                      data=demog.qc, snp.data=geno.qc, family="binomial")
 
-res[1:5,] #Table 5
+res[1:5,] #Table 5: Top 5 SNPs Associated with AD
 ```
 
 
@@ -266,7 +266,7 @@ pvals <- data.frame(SNP=annotation$snp.name,
 # missing data is not allowed
 pvals <- subset(pvals, !is.na(CHR) & !is.na(P))
 pvals$P_adj <- p.adjust(pvals$P, method = "bonferroni") #No SNP is significant after Bonferroni
-head(pvals[order(pvals$P),]) #Table 6
+head(pvals[order(pvals$P),]) #Table 6: Top Associated SNPs and Bonferroni Multiple Testing Correction Results
 
 manhattanPlot(pvals, color=c("gray90", "gray40")) #Graph 7
 
@@ -344,7 +344,7 @@ significant_snp$OR_dominant <- dominant_model$OR
 significant_snp$OR_recessive <- recessive_model$OR
 significant_snp$OR_additive <- additive_model$OR
 
-significant_snp #Table 7
+significant_snp #Table 7: Top Candidate SNPs and Odds Ratios across Inheritance Models
 ```
 
 Since the Bonferroni threshold was too strict and didn't capture any SNPs, I used a standard threshold of 10e-6. The SNPs rs11253696 had no gene name, neither was it posible to find it manually on a database, that might be because it’s located in an intergenic region or in a non-coding region of genes (Table 7).
@@ -363,10 +363,10 @@ sel <- labels(alzheimer.s)[additive(ans)<0.1] #All SNPs pass the filter
 alzheimer.sel <- alzheimer.s[,sel]
 head(alzheimer.sel)
 
-#Add the casecontrol column again
+#Add the case control column again
 alzheimer.sel <- data.frame(lapply(alzheimer.sel, additive))
 dd.end <- data.frame(casecontrol=alzheimer.s$casecontrol, alzheimer.sel)
-head(dd.end) #Table 8
+head(dd.end) #Table 8: Genotype Data of Selected SNPs Associated with AD
 
 #Fit the model
 dd.end.complete <- dd.end[complete.cases(dd.end),]
@@ -391,7 +391,7 @@ table(score)
 #Association model
 mod.lin <- glm(casecontrol~score, dd.end.complete,
                family="binomial")
-mod.lin #Table 9
+mod.lin #Table 9: Logistic Regression Results
 
 #Assessment of the predictive power of the model by under ROC curve
 predrisk <- predRisk(mod.lin, dd.end.complete)
